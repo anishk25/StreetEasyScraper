@@ -1,7 +1,9 @@
 from typing import List
+import bs4
 from bs4 import BeautifulSoup
 import requests
 from collections import namedtuple
+import re
 
 
 # documentation for beatifulsoup: https://www.crummy.com/software/BeautifulSoup/bs4/doc/
@@ -13,19 +15,52 @@ ApartmentFilter = namedtuple('ApartmentFiler',
     ['neighborhood', 'min_bedrooms', 'min_bathrooms', 'max_price', 'amenities']
 )
 
-valid_neighborhoods = [
-    'manhattan', 'brooklyn', 'queens'
+valid_amenities = [
+    'doorman','elevator','gym','laundry','parking','pool'
 ]
 
 class StreetEasyClient():
     def __init__(self, apartment_filter: ApartmentFilter) -> None:
-        assert apartment_filter.neighborhood in valid_neighborhoods
         self.apartment_filter = apartment_filter
+        for amenity in apartment_filter.amenities:
+            assert amenity in valid_amenities, f"Invalid amentity provided, valid amenities are {valid_amenities}"
     
     # returns a list of urls that fit the criteria specified in the filter
     def get_apartments(self) -> List[str]:
         building_urls = self.get_all_buildings_urls()
-        return building_urls
+        return [
+            apt_url
+            for building_url in building_urls
+            for apt_url in self.get_matching_apartments(building_url)
+        ]
+
+
+    def get_matching_apartments(self, building_url: str) -> List[str]:
+        soup = self.get_soup(building_url)
+        result = []
+        apartment_descs = soup.find_all("div", {"class":"ActiveListingsUnit-itemContent"})
+
+        for desc in apartment_descs:
+            price = self._parse_price_from_apt_desc(desc)
+            
+            num_beds, num_baths = 0, 0
+            apt_properties =  desc.find_all('span', {'class': 'ActiveListingsUnit-itemProperty'})
+            for prop in apt_properties:
+                class_name = prop.span['class'][1]
+                content = prop.text.strip().lower()
+                if "bed" in class_name:
+                    num_beds = 0 if content == "studio" else int(list(filter(str.isdigit, content))[0])
+                elif "bath" in class_name:
+                    num_baths = int(list(filter(str.isdigit, content))[0])
+            
+            if (price <= self.apartment_filter.max_price and num_beds >= self.apartment_filter.min_bedrooms 
+                and num_baths >= self.apartment_filter.min_bathrooms):
+                property_url = desc.find("a", {"class": "ActiveListingsUnit-address"})["href"].split('?')[0]
+                result.append(property_url)
+
+        return result
+
+
 
     def get_all_buildings_urls(self) -> List[str]:
         result = []
@@ -84,3 +119,13 @@ class StreetEasyClient():
             url += f"/building_amenities:{','.join(self.apartment_filter.amenities)}"
         url += f"?page={page_number}&amp;refined_search=true"
         return url
+
+    
+    @staticmethod
+    def _parse_price_from_apt_desc(apt_desc: bs4.element.Tag) -> int:
+        price = apt_desc.find("div", {"class": "ActiveListingsUnit-itemPrice"})
+        price = price.text.strip()
+        price = re.search(r'\$.+', price).group(0)
+        price = price.strip('$').replace(',','')
+        return int(price)
+
