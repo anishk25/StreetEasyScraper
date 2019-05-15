@@ -4,6 +4,8 @@ from bs4 import BeautifulSoup
 import requests
 from collections import namedtuple
 import re
+from multiprocessing import Pool
+import multiprocessing
 
 
 # documentation for beatifulsoup: https://www.crummy.com/software/BeautifulSoup/bs4/doc/
@@ -11,7 +13,7 @@ import re
 BASE_URL = "https://streeteasy.com"
 BEAUTIFUL_SOUP_PARSER = "html.parser"
 
-ApartmentFilter = namedtuple('ApartmentFiler', 
+ApartmentFilter = namedtuple('ApartmentFilter', 
     ['neighborhood', 'min_bedrooms', 'min_bathrooms', 'max_price', 'amenities']
 )
 
@@ -28,11 +30,11 @@ class StreetEasyClient():
     # returns a list of urls that fit the criteria specified in the filter
     def get_apartments(self) -> List[str]:
         building_urls = self.get_all_buildings_urls()
-        return [
-            apt_url
-            for building_url in building_urls
-            for apt_url in self.get_matching_apartments(building_url)
-        ]
+        pool = Pool(multiprocessing.cpu_count() * 2)
+        apt_url_lsts = pool.map(self.get_matching_apartments, building_urls)
+        pool.close()
+        pool.join()
+        return [apt_url for apt_url_lst in apt_url_lsts for apt_url in apt_url_lst]
 
 
     def get_matching_apartments(self, building_url: str) -> List[str]:
@@ -75,12 +77,20 @@ class StreetEasyClient():
         
         num_pages = int(pages[-1].get_text().strip())
 
-        for i in range(2,num_pages+1):
-            url = self.get_buildings_page_url(i)
-            soup = self.get_soup(url)
-            result.extend(self.get_building_urls_in_page(soup))
-        
+        pool = Pool(multiprocessing.cpu_count() * 2)
+        building_url_lsts = pool.map(self.get_building_urls, list(range(2, num_pages + 1)))
+        pool.close()
+        pool.join()
+
+        for url_lst in building_url_lsts:
+            result.extend(url_lst)
+
         return result
+
+    def get_building_urls(self, page_number):
+        url = self.get_buildings_page_url(page_number)
+        soup = self.get_soup(url)
+        return self.get_building_urls_in_page(soup) 
         
     def get_building_urls_in_page(self, soup: BeautifulSoup) -> List[str]:
         building_items = soup.find_all("li", {"class": "item building"})
